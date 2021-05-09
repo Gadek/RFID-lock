@@ -1,0 +1,485 @@
+// Include required libraries
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Servo.h>
+#include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
+#include <SPI.h>        // RC522 Module uses SPI protocol
+#include <MFRC522.h>  // Library for Mifare RC522 Devices
+#include <MD5.h>
+// Create instances
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+MFRC522 mfrc522(10, 9); // MFRC522 mfrc522(SS_PIN, RST_PIN)
+Servo sg90;
+// Initialize Pins for led's, servo and buzzer
+// Blue LED is connected to 5V
+constexpr uint8_t greenLed = 7;
+constexpr uint8_t redLed = 6;
+constexpr uint8_t servoPin = 8;
+constexpr uint8_t buzzerPin = 5;
+
+byte key_pressed = 0; // Variable to store incoming keys
+uint8_t i = 0;  // Variable used for counter
+// defining how many rows and columns our keypad have
+const byte rows = 4;
+const byte columns = 4;
+// Keypad pin map
+byte hexaKeys[rows][columns] = {
+  {0x1, 0x2, 0x3, 0x4},
+  {0x5, 0x6, 0x7, 0x8},
+  {0x9, 0xA, 0xB, 0xC},
+  {0xD, 0xE, 0xF, 0x0}
+};
+// Initializing pins for keypad
+byte row_pins[rows] = {4, 3, 2};
+byte column_pins[columns] = {A0, A1, A2, A3};
+// Create instance for keypad
+Keypad keypad_key = Keypad( makeKeymap(hexaKeys), row_pins, column_pins, rows, columns);
+
+uint8_t successRead;    // Variable integer to keep if we have Successful Read from Reader
+
+char readPIN[4];   // Variable to store users PIN
+char storedCardHash[33];   // przechowuje hash UID odczytany z pamięci
+char storedPINHash[33];// przechowuje hash PINu odczytany z pamięci
+
+bool programMode = false;  // tryb programowania do dodawania i usuwania kart z pamięci
+bool addingCardMode = false;  //Tryb ustawiania PINu w trybie programowania
+boolean RFIDMode = true; // boolean to change modes
+
+
+int IDslot; // przechowuje index zeskanowanej karty; przechowuje 255 jeśli zeskanowanej karty nie ma w pamięci
+
+uint8_t findID(); // zwraca index zeskanowanej karty; przechowuje 255 jeśli zeskanowanej karty nie ma w pamięci
+uint8_t getID(); // skanuje kartę i zamienia UID na hash
+void print_(int n); // wyświetla pierwsze n "komórek" w pamięci
+void accessDenied();  //sygnał świetlny i brzęczyk
+
+unsigned char* hash;
+char *md5strUID; //hash UID zeskanowanej karty
+char *md5strPIN; //hash PINu podanego z klawiatury
+
+void setup() {
+  // Arduino Pin configuration
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(redLed, OUTPUT);
+  pinMode(greenLed, OUTPUT);
+  sg90.attach(servoPin);  //Declare pin 8 for servo
+  sg90.write(0); // Set initial position at 90 degrees
+  lcd.begin();   // LCD screen
+  lcd.backlight();
+  SPI.begin();      // Init SPI bus
+  Serial.begin(9600);
+  mfrc522.PCD_Init();   // Init MFRC522
+  lcd.clear(); // Clear LCD screen
+
+  
+  //TEN KOD DODAJE MASTERCARD 
+  if (EEPROM.read(1) == 143) {
+    EEPROM.update(0, 0); 
+    lcd.clear();
+    lcd.print("Scan to add");
+    lcd.setCursor(0,1);
+    lcd.print("Master Card");
+    int successRead;
+    do {
+      successRead = getID();            // sets successRead to 1 when we get read from reader otherwise 0
+    }
+    while (!successRead);                  // Program will not go further while you not get a successful read
+    
+    lcd.clear();
+    lcd.print("Set PIN:");
+    lcd.setCursor(0,1);
+    do {
+      key_pressed = keypad_key.getKey(); // Storing keys
+      if (key_pressed)
+      {
+        readPIN[i++] = key_pressed; // Storing in PIN variable
+        lcd.print(key_pressed);
+      }
+    } while(i<4);
+    
+    
+    Serial.println("WYKONUJE SIE FREE(hash)");
+    free(hash);
+    hash=MD5::make_hash(readPIN);
+    md5strPIN = MD5::make_digest(hash, 16);
+    Serial.println("md5strPIN:");
+    Serial.println(md5strPIN);
+   
+    writeID();
+    Serial.println("WYKONUJE SIE FREE(hash), FREE(md5strUID) ORAZ FREE(md5strPIN)");
+    free(hash);
+    free(md5strUID);
+    free(md5strPIN);
+    EEPROM.update(1, 143);
+    EEPROM.update(0, 1);   // Write to EEPROM we defined Master Card.
+    lcd.clear();
+    lcd.print("MasterCard added");
+    delay(1500);
+    lcd.clear();
+    i=0;
+  } 
+  
+  printDoorLocked();
+
+  print_(6);
+}
+void loop() {
+    // System will first look for mode
+  if (RFIDMode == true) {
+    int successRead;
+    //Look for new cards
+    do {
+      successRead = getID();            // sets successRead to 1 when we get read from reader otherwise 0
+    }
+    while (!successRead);                  // Program will not go further while you not get a successful read
+    IDslot=findID();
+    Serial.println("WYKONUJE SIE FREE(hash)");
+    free(hash);
+    if (programMode == false) { 
+      // This code will execute at the beginning
+      if ( IDslot!=255 ) { // See if the card is in the EEPROM
+           // If UID of tag is matched.
+          Serial.println("Znaleziono karte");
+          lcd.clear();
+          lcd.print("Tag Matched");
+          digitalWrite(greenLed, HIGH);
+          delay(1000);
+          digitalWrite(greenLed, LOW);
+          lcd.clear();
+          lcd.print("Enter PIN:");
+          lcd.setCursor(0, 1);
+          RFIDMode = false; // Make RFID mode false
+          Serial.println("WYKONUJE SIE FREE(md5strUID)");
+          free(md5strUID);
+        }
+        else {      // If not, show that the ID was not valid
+           // If UID of tag is not matched.
+          Serial.println("Nie znaleziono tej karty");
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Wrong Tag Shown");
+          lcd.setCursor(0, 1);
+          lcd.print("Access Denied");
+          accessDenied();
+          printDoorLocked();
+          Serial.println("WYKONUJE SIE FREE(md5strUID)");
+          free(md5strUID);
+        }
+    }
+    else { 
+      // Programming Mode
+      if ( IDslot==0 ) { //When in program mode check First If master card scanned again to exit program mode
+        lcd.clear();
+        lcd.print("Exiting");
+        lcd.setCursor(0,1);
+        lcd.print("Programming Mode");
+        programMode = false;
+        Serial.println();
+        Serial.println("Wychodzenie z trybu programowania");
+        digitalWrite(greenLed, HIGH);
+        delay(1000);
+        digitalWrite(greenLed, LOW);
+        printDoorLocked();
+        Serial.println("WYKONUJE SIE FREE(md5strUID)");
+        free(md5strUID);
+      }
+      else if ( IDslot == 255 ) {
+        lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Not in memory");
+          lcd.setCursor(0, 1);
+          lcd.print("Adding the tag");
+          digitalWrite(greenLed, HIGH);
+          delay(1000);
+          digitalWrite(greenLed, LOW);
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Set PIN:");
+          lcd.setCursor(0,1);
+          RFIDMode = false;
+          addingCardMode = true;
+      }
+      else { // If scanned card is known delete it
+          deleteID(md5strUID);
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Found in memory");
+          lcd.setCursor(0, 1);
+          lcd.print("Removing the tag...");
+          digitalWrite(greenLed, HIGH);
+          delay(1000);
+          digitalWrite(greenLed, LOW);
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("   Scan a tag");
+          lcd.setCursor(0, 1);
+          lcd.print("to add or remove");
+          Serial.println("WYKONUJE SIE FREE(md5strUID)");
+          free(md5strUID);
+      }
+    }
+  }
+  // If RFID mode is false, it will look for keys from keypad
+  else {
+    key_pressed = keypad_key.getKey(); // Storing keys
+    if (key_pressed)
+    {
+      readPIN[i++] = key_pressed; // Storing in PIN variable
+      Serial.print(readPIN[i-1], HEX);
+      if (addingCardMode) {
+        lcd.print(key_pressed);
+      } else {
+        lcd.print("*");
+      }
+    }
+    if (i == 4) // If 4 keys are completed
+    {
+      hash=MD5::make_hash(readPIN);
+      md5strPIN = MD5::make_digest(hash, 16);
+      Serial.println();
+      Serial.println("md5strPIN:");
+      Serial.println(md5strPIN);
+      delay(200);
+      readPINFromEEPROM(IDslot);
+      bool correctPassord = checkTwoPINs();
+      
+      if (IDslot==0 && correctPassord) // Podawanie hasła do trybu programowania
+      {
+        
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Entering");
+        lcd.setCursor(0, 1);
+        lcd.print("Programming Mode");
+        digitalWrite(greenLed, HIGH);
+        delay(1000);
+        digitalWrite(greenLed, LOW);
+        Serial.println();
+        Serial.println("Wchodzenie w tryb programowania");
+        uint8_t count = EEPROM.read(0);   // Read the first Byte of EEPROM that
+        Serial.print(F("I have "));     // stores the number of ID's in EEPROM
+        Serial.print(count);
+        Serial.println(F(" record(s) on EEPROM"));
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("   Scan a tag");
+        lcd.setCursor(0, 1);
+        lcd.print("to add or remove");
+        programMode = true;  // Go to Programming Mode
+      } 
+      else if (IDslot!=0 && !addingCardMode && correctPassord) //Podawanie hasła do uwierzytelnienia innej karty niż mastercard
+      {
+        lcd.clear();
+        lcd.print("Pass Accepted");
+        sg90.write(90); // Door Opened
+        digitalWrite(greenLed, HIGH);
+        delay(1000);
+        digitalWrite(greenLed, LOW);
+        sg90.write(0); // Door Closed
+        printDoorLocked();
+      } else if (addingCardMode) {   //Podawanie hasła do dodawanej właśnie karty
+         writeID();
+         lcd.clear();
+         lcd.setCursor(0, 0);
+         lcd.print(" New tag added");
+         delay(1000);
+         lcd.clear();
+         lcd.setCursor(0, 0);
+         lcd.print("Scan a tag");
+         lcd.setCursor(0, 1);
+         lcd.print("to add or remove");
+         addingCardMode = false;
+         Serial.println("WYKONUJE SIE FREE(md5strUID)");
+         free(md5strUID);
+      }
+      else   // If PIN is not matched
+      {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Wrong PIN");
+        lcd.setCursor(0, 1);
+        lcd.print("Access Denied");
+        accessDenied();   
+        printDoorLocked();
+      }
+      Serial.println("WYKONUJE SIE FREE(hash) ORAZ FREE(md5strPIN)");
+      free(hash);
+      free(md5strPIN);
+      i = 0;  //reset counter for PIN
+//    memset(readPIN, 0, sizeof PIN);
+      RFIDMode = true;  // Make RFID mode true
+      
+     }
+  }
+}
+
+///////////////////////////////////////// Get PICC's UID ///////////////////////////////////
+uint8_t getID() {
+  
+  // Getting ready for Reading PICCs
+  if ( ! mfrc522.PICC_IsNewCardPresent()) { //If a new PICC placed to RFID reader continue
+    return 0;
+  }
+  if ( ! mfrc522.PICC_ReadCardSerial()) {   //Since a PICC placed get Serial and continue
+    return 0;
+  }
+  byte readCard[4];
+  Serial.println();
+  Serial.println(F("Scanned PICC's UID:"));
+  for ( uint8_t i = 0; i < 4; i++) {  //
+    readCard[i] = mfrc522.uid.uidByte[i];
+    Serial.print(readCard[i], HEX);
+  }
+  
+  hash=MD5::make_hash(readCard);
+  md5strUID = MD5::make_digest(hash, 16);
+  Serial.println();
+  Serial.println("md5strUID:");
+  Serial.println(md5strUID);
+  Serial.println();
+  mfrc522.PICC_HaltA(); // Stop reading
+  return 1;
+}
+
+
+//////////////////////////////////////// Read an ID from EEPROM //////////////////////////////
+void readIDFromEEPROM( uint8_t number ) {
+  uint8_t start = (number * 64 ) + 2;    // Figure out starting position
+  for ( int i = 0; i < 32; i++ ) {     // Loop 4 times to get the 4 Bytes
+    storedCardHash[i] = EEPROM.read(start + i);   // Assign values read from EEPROM to array
+  }
+}
+
+//////////////////////////////////////// Read an PIN from EEPROM //////////////////////////////
+void readPINFromEEPROM( uint8_t number ) {
+  uint8_t start = (number * 64 ) + 34;    // Figure out starting position
+  for ( int i = 0; i < 32; i++ ) {     // Loop 4 times to get the 4 Bytes
+    storedPINHash[i] = EEPROM.read(start + i);   // Assign values read from EEPROM to array
+  }
+}
+
+
+///////////////////////////////////////// Find ID From EEPROM   ///////////////////////////////////
+uint8_t findID() {
+  uint8_t count = EEPROM.read(0);     // Read the first Byte of EEPROM that
+  for ( uint8_t i = 0; i < count; i++ ) {    // Loop once for each EEPROM entry
+    readIDFromEEPROM(i);          // Read an ID from EEPROM, it is stored in storedCardHash[4]
+    if ( checkTwoCards( ) ) {   // Check to see if the storedCard read from EEPROM
+      return i;
+    }
+  }
+  return 255;
+}
+
+///////////////////////////////////////// Check Bytes of UID hashes   ///////////////////////////////////
+bool checkTwoCards ( ) {   
+  Serial.println("Porownywane hashy UID:");
+  Serial.println("StoredCardHash:");
+  Serial.println(storedCardHash);
+  Serial.println("md5strUID:");
+  Serial.println(md5strUID);
+  for ( uint8_t k = 0; k < 32; k++ ) {   // Loop 4 times
+    if ( md5strUID[k] != storedCardHash[k] ) {
+       return false;
+    }
+  }
+  return true;  
+}
+
+///////////////////////////////////////// Check Bytes of PIN hashes   ///////////////////////////////////
+bool checkTwoPINs ( ) {   
+  Serial.println("Porownywane hashy PINÓW:");
+  Serial.println("StoredPINHash:");
+  Serial.println(storedPINHash);
+  Serial.println("md5strPIN:");
+  Serial.println(md5strPIN);
+  for ( uint8_t k = 0; k < 32; k++ ) {   // Loop 4 times
+    if ( md5strPIN[k] != storedPINHash[k] ) {
+       return false;
+    }
+  }
+  return true;  
+}
+
+///////////////////////////////////////// Add ID to EEPROM   ///////////////////////////////////
+void writeID(  ) {
+  //if ( findID()!=255 ) {     // Before we write to the EEPROM, check to see if we have seen this card before!
+    uint8_t num = EEPROM.read(0);     // Get the numer of used spaces, position 0 stores the number of ID cards
+    uint8_t start = ( num * 64 ) + 2;  // Figure out where the next slot starts
+    num++;                // Increment the counter by one
+    EEPROM.write( 0, num );     // Write the new count to the counter
+    Serial.println();
+    Serial.println("ZAPISYWANIE");
+    Serial.print("hash UID: ");
+    Serial.println(md5strUID);
+    Serial.print("hash PIN: ");
+    Serial.println(md5strPIN);
+    Serial.println();
+    for ( uint8_t j = 0; j < 32; j++ ) {   // Loop 4 times
+      EEPROM.write( start + j+32, md5strPIN[j] );  // Write the array values to EEPROM in the right position
+      EEPROM.write( start + j, md5strUID[j] );  // Write the array values to EEPROM in the right position
+    }
+   
+    Serial.println(F("Zapisano pomyślnie"));
+ // }
+//  else {
+ //   Serial.println(F("Failed! There is something wrong with ID or bad EEPROM"));
+ // }
+}
+
+///////////////////////////////////////// Remove ID from EEPROM   ///////////////////////////////////
+void deleteID( byte a[] ) {
+  if ( !findID(  ) ) {     // Before we delete from the EEPROM, check to see if we have this card!
+    Serial.println(F("Failed! There is something wrong with ID or bad EEPROM"));
+  }
+  else {
+    uint8_t num = EEPROM.read(0);   // Get the numer of used spaces, position 0 stores the number of ID cards
+//    uint8_t slot;       // Figure out the slot number of the card
+//    uint8_t start;      // = ( num * 4 ) + 6; // Figure out where the next slot starts
+//    uint8_t looping;    // The number of times the loop repeats
+//    uint8_t j;
+//    uint8_t count = EEPROM.read(0); // Read the first Byte of EEPROM that stores number of cards
+//    slot = findID();   // Figure out the slot number of the card to delete
+//    start = (slot * 64) + 2;
+//    looping = ((num - slot) * 64);
+    num--;      // Decrement the counter by one
+    EEPROM.write( 0, num );   // Write the new count to the counter
+//    for ( j = 0; j < looping; j++ ) {         // Loop the card shift times
+//      EEPROM.write( start + j, EEPROM.read(start + 64 + j));   // Shift the array values to 4 places earlier in the EEPROM
+//    }
+//    for ( uint8_t k = 0; k < 64; k++ ) {         // Shifting loop
+//      EEPROM.write( start + j + k, 0);
+//    }
+    Serial.println(F("Succesfully removed ID record from EEPROM"));
+  }
+}
+
+void accessDenied(){
+  digitalWrite(buzzerPin, HIGH);
+  digitalWrite(redLed, HIGH);
+  delay(1000);
+  digitalWrite(buzzerPin, LOW);
+  digitalWrite(redLed, LOW);
+}
+void printDoorLocked() {
+  lcd.setCursor(0, 0);
+  lcd.print("   Door Lock    ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Scan Your Tag  ");   
+}
+
+void print_(int bytes){
+  Serial.println();
+  Serial.print("Zawartość pierwszych ");
+  Serial.print(bytes+2);
+  Serial.println(" \"komórek\" EEPROM");
+  Serial.println(EEPROM[ 0 ]);
+  Serial.println(EEPROM[ 1 ]);
+  for(int i=0; i<bytes; i++){
+    for (int index = 0 ; index < 32 ; index++) {
+      Serial.print(char(EEPROM[ (index+i*32)+2 ]));
+    }
+    Serial.println();
+  }
+}
+  
