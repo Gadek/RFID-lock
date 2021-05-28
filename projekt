@@ -1,15 +1,23 @@
 // Include required libraries
+#include <Crypto.h>
+#include <SHA256.h>
+#include <string.h>
+
 #include <LiquidCrystal_I2C.h>
 #include <Keypad.h>
-#include <Servo.h>
+//#include <Servo.h>
 #include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
 #include <SPI.h>        // RC522 Module uses SPI protocol
 #include <MFRC522.h>  // Library for Mifare RC522 Devices
-#include <MD5.h>
+
+SHA256 sha256;
+
+
+
 // Create instances
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 MFRC522 mfrc522(10, 9); // MFRC522 mfrc522(SS_PIN, RST_PIN)
-Servo sg90;
+//Servo sg90;
 // Initialize Pins for led's, servo and buzzer
 // Blue LED is connected to 5V
 constexpr uint8_t greenLed = 7;
@@ -38,8 +46,8 @@ Keypad keypad_key = Keypad( makeKeymap(hexaKeys), row_pins, column_pins, rows, c
 uint8_t successRead;    // Variable integer to keep if we have Successful Read from Reader
 
 char readPIN[4];   // Variable to store users PIN
-char storedCardHash[33];   // przechowuje hash UID odczytany z pamięci
-char storedPINHash[33];// przechowuje hash PINu odczytany z pamięci
+uint8_t storedCardHash[32];   // przechowuje hash UID odczytany z pamięci
+uint8_t storedPINHash[32];// przechowuje hash PINu odczytany z pamięci
 
 bool programMode = false;  // tryb programowania do dodawania i usuwania kart z pamięci
 bool addingCardMode = false;  //Tryb ustawiania PINu w trybie programowania
@@ -53,17 +61,17 @@ uint8_t getID(); // skanuje kartę i zamienia UID na hash
 void print_(int n); // wyświetla pierwsze n "komórek" w pamięci
 void accessDenied();  //sygnał świetlny i brzęczyk
 
-unsigned char* hash;
-char *md5strUID; //hash UID zeskanowanej karty
-char *md5strPIN; //hash PINu podanego z klawiatury
+
+uint8_t hashUID[32]; //hash UID zeskanowanej karty
+uint8_t hashPIN[32]; //hash PINu podanego z klawiatury
 
 void setup() {
   // Arduino Pin configuration
   pinMode(buzzerPin, OUTPUT);
   pinMode(redLed, OUTPUT);
   pinMode(greenLed, OUTPUT);
-  sg90.attach(servoPin);  //Declare pin 8 for servo
-  sg90.write(0); // Set initial position at 90 degrees
+//  sg90.attach(servoPin);  //Declare pin 8 for servo
+//  sg90.write(0); // Set initial position at 90 degrees
   lcd.begin();   // LCD screen
   lcd.backlight();
   SPI.begin();      // Init SPI bus
@@ -97,19 +105,12 @@ void setup() {
       }
     } while(i<4);
     
-    
-    Serial.println("WYKONUJE SIE FREE(hash)");
-    free(hash);
-    hash=MD5::make_hash(readPIN);
-    md5strPIN = MD5::make_digest(hash, 16);
-    Serial.println("md5strPIN:");
-    Serial.println(md5strPIN);
+    hash(&sha256, readPIN, "P");
+    Serial.println("hashPIN:");
+    displayHash(hashPIN);
    
     writeID();
-    Serial.println("WYKONUJE SIE FREE(hash), FREE(md5strUID) ORAZ FREE(md5strPIN)");
-    free(hash);
-    free(md5strUID);
-    free(md5strPIN);
+    
     EEPROM.update(1, 143);
     EEPROM.update(0, 1);   // Write to EEPROM we defined Master Card.
     lcd.clear();
@@ -120,9 +121,9 @@ void setup() {
   } 
   
   printDoorLocked();
-
   print_(6);
 }
+
 void loop() {
     // System will first look for mode
   if (RFIDMode == true) {
@@ -133,8 +134,7 @@ void loop() {
     }
     while (!successRead);                  // Program will not go further while you not get a successful read
     IDslot=findID();
-    Serial.println("WYKONUJE SIE FREE(hash)");
-    free(hash);
+    
     if (programMode == false) { 
       // This code will execute at the beginning
       if ( IDslot!=255 ) { // See if the card is in the EEPROM
@@ -149,8 +149,7 @@ void loop() {
           lcd.print("Enter PIN:");
           lcd.setCursor(0, 1);
           RFIDMode = false; // Make RFID mode false
-          Serial.println("WYKONUJE SIE FREE(md5strUID)");
-          free(md5strUID);
+          
         }
         else {      // If not, show that the ID was not valid
            // If UID of tag is not matched.
@@ -162,8 +161,7 @@ void loop() {
           lcd.print("Access Denied");
           accessDenied();
           printDoorLocked();
-          Serial.println("WYKONUJE SIE FREE(md5strUID)");
-          free(md5strUID);
+          
         }
     }
     else { 
@@ -180,8 +178,7 @@ void loop() {
         delay(1000);
         digitalWrite(greenLed, LOW);
         printDoorLocked();
-        Serial.println("WYKONUJE SIE FREE(md5strUID)");
-        free(md5strUID);
+       
       }
       else if ( IDslot == 255 ) {
         lcd.clear();
@@ -200,7 +197,7 @@ void loop() {
           addingCardMode = true;
       }
       else { // If scanned card is known delete it
-          deleteID(md5strUID);
+          deleteID(hashUID);
           lcd.clear();
           lcd.setCursor(0, 0);
           lcd.print("Found in memory");
@@ -214,8 +211,7 @@ void loop() {
           lcd.print("   Scan a tag");
           lcd.setCursor(0, 1);
           lcd.print("to add or remove");
-          Serial.println("WYKONUJE SIE FREE(md5strUID)");
-          free(md5strUID);
+         
       }
     }
   }
@@ -234,11 +230,11 @@ void loop() {
     }
     if (i == 4) // If 4 keys are completed
     {
-      hash=MD5::make_hash(readPIN);
-      md5strPIN = MD5::make_digest(hash, 16);
+      
       Serial.println();
-      Serial.println("md5strPIN:");
-      Serial.println(md5strPIN);
+      hash(&sha256, readPIN, "P");
+      Serial.println("hashPIN:");
+      displayHash(hashPIN);
       delay(200);
       readPINFromEEPROM(IDslot);
       bool correctPassord = checkTwoPINs();
@@ -271,11 +267,9 @@ void loop() {
       {
         lcd.clear();
         lcd.print("Pass Accepted");
-        sg90.write(90); // Door Opened
         digitalWrite(greenLed, HIGH);
         delay(1000);
         digitalWrite(greenLed, LOW);
-        sg90.write(0); // Door Closed
         printDoorLocked();
       } else if (addingCardMode) {   //Podawanie hasła do dodawanej właśnie karty
          writeID();
@@ -289,8 +283,7 @@ void loop() {
          lcd.setCursor(0, 1);
          lcd.print("to add or remove");
          addingCardMode = false;
-         Serial.println("WYKONUJE SIE FREE(md5strUID)");
-         free(md5strUID);
+         
       }
       else   // If PIN is not matched
       {
@@ -302,11 +295,8 @@ void loop() {
         accessDenied();   
         printDoorLocked();
       }
-      Serial.println("WYKONUJE SIE FREE(hash) ORAZ FREE(md5strPIN)");
-      free(hash);
-      free(md5strPIN);
+      
       i = 0;  //reset counter for PIN
-//    memset(readPIN, 0, sizeof PIN);
       RFIDMode = true;  // Make RFID mode true
       
      }
@@ -315,7 +305,6 @@ void loop() {
 
 ///////////////////////////////////////// Get PICC's UID ///////////////////////////////////
 uint8_t getID() {
-  
   // Getting ready for Reading PICCs
   if ( ! mfrc522.PICC_IsNewCardPresent()) { //If a new PICC placed to RFID reader continue
     return 0;
@@ -324,18 +313,22 @@ uint8_t getID() {
     return 0;
   }
   byte readCard[4];
+  unsigned char readCardChar[4];
   Serial.println();
   Serial.println(F("Scanned PICC's UID:"));
   for ( uint8_t i = 0; i < 4; i++) {  //
     readCard[i] = mfrc522.uid.uidByte[i];
     Serial.print(readCard[i], HEX);
+    readCardChar[i]=(char)readCard[i];
   }
-  
-  hash=MD5::make_hash(readCard);
-  md5strUID = MD5::make_digest(hash, 16);
   Serial.println();
-  Serial.println("md5strUID:");
-  Serial.println(md5strUID);
+  for ( uint8_t i = 0; i < 4; i++) {  
+    Serial.print(readCardChar[i]);
+  }
+  hash(&sha256, readCardChar, "U");
+  Serial.println();
+  Serial.println("hashUID:");
+  displayHash(hashUID);
   Serial.println();
   mfrc522.PICC_HaltA(); // Stop reading
   return 1;
@@ -375,14 +368,13 @@ uint8_t findID() {
 bool checkTwoCards ( ) {   
   Serial.println("Porownywane hashy UID:");
   Serial.println("StoredCardHash:");
-  Serial.println(storedCardHash);
-  Serial.println("md5strUID:");
-  Serial.println(md5strUID);
-  for ( uint8_t k = 0; k < 32; k++ ) {   // Loop 4 times
-    if ( md5strUID[k] != storedCardHash[k] ) {
-       return false;
-    }
-  }
+  displayHash(storedCardHash);
+  Serial.println("hashUID:");
+  displayHash(hashUID);
+  if (memcmp(hashUID, storedCardHash, sizeof(hashUID)) != 0) {
+          Serial.print("UID są różne");
+          return false;
+      }
   return true;  
 }
 
@@ -390,14 +382,13 @@ bool checkTwoCards ( ) {
 bool checkTwoPINs ( ) {   
   Serial.println("Porownywane hashy PINÓW:");
   Serial.println("StoredPINHash:");
-  Serial.println(storedPINHash);
-  Serial.println("md5strPIN:");
-  Serial.println(md5strPIN);
-  for ( uint8_t k = 0; k < 32; k++ ) {   // Loop 4 times
-    if ( md5strPIN[k] != storedPINHash[k] ) {
-       return false;
-    }
-  }
+  displayHash(storedPINHash);
+  Serial.println("hashPIN:");
+  displayHash(hashPIN);
+if (memcmp(hashPIN, storedPINHash, sizeof(hashPIN)) != 0) {
+          Serial.print("PINy są różne");
+          return false;
+      }
   return true;  
 }
 
@@ -411,13 +402,13 @@ void writeID(  ) {
     Serial.println();
     Serial.println("ZAPISYWANIE");
     Serial.print("hash UID: ");
-    Serial.println(md5strUID);
+    displayHash(hashUID);
     Serial.print("hash PIN: ");
-    Serial.println(md5strPIN);
+    displayHash(hashPIN);
     Serial.println();
-    for ( uint8_t j = 0; j < 32; j++ ) {   // Loop 4 times
-      EEPROM.write( start + j+32, md5strPIN[j] );  // Write the array values to EEPROM in the right position
-      EEPROM.write( start + j, md5strUID[j] );  // Write the array values to EEPROM in the right position
+    for ( uint8_t j = 0; j < 32; j++ ) {   
+      EEPROM.write( start + j+32, hashPIN[j] );  // Write the array values to EEPROM in the right position
+      EEPROM.write( start + j, hashUID[j] );  // Write the array values to EEPROM in the right position
     }
    
     Serial.println(F("Zapisano pomyślnie"));
@@ -454,6 +445,35 @@ void deleteID( byte a[] ) {
   }
 }
 
+
+uint8_t value[32];
+uint8_t hash(Hash *hash, const char *data,const char *mode)
+{
+    hash->reset();
+    hash->update(data, strlen(data));
+    hash->finalize(value, hash->hashSize());
+
+    if(mode=="U") {
+      for(int i=0; i<32; i++) {
+        hashUID[i] = value[i];
+      }
+    } else if(mode=="P") {
+      for(int i=0; i<32; i++) {
+        hashPIN[i] = value[i];
+      }
+    } else {
+      //Ten warunek i tak nigdy nie powinien sie spełnic
+      Serial.println("PODAJ \"P\" jesli chcesz zapisać PIN LUB \"U\" jeśli chcesz zapisac UID");
+    }
+   
+}
+
+void displayHash(uint8_t *hash) {
+  for(int i=0; i<32; i++) {
+      Serial.print(hash[i],HEX);
+    }
+  Serial.println();
+}
 void accessDenied(){
   digitalWrite(buzzerPin, HIGH);
   digitalWrite(redLed, HIGH);
@@ -477,9 +497,8 @@ void print_(int bytes){
   Serial.println(EEPROM[ 1 ]);
   for(int i=0; i<bytes; i++){
     for (int index = 0 ; index < 32 ; index++) {
-      Serial.print(char(EEPROM[ (index+i*32)+2 ]));
+      Serial.print(EEPROM[ (index+i*32)+2 ], HEX);
     }
     Serial.println();
   }
 }
-  
