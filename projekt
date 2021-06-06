@@ -245,10 +245,7 @@ uint8_t getID() {
   for ( uint8_t i = 0; i < 4; i++) {  //
     readCard[i] = mfrc522.uid.uidByte[i];
   }
-
   hash(&sha256, readCard, hashUID);
-  memset(readCard,0,sizeof(readCard));
-
   mfrc522.PICC_HaltA(); // Stop reading
   return 1;
 }
