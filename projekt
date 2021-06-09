@@ -46,7 +46,7 @@ bool addingCardMode = false;  //Tryb ustawiania PINu w trybie programowania
 boolean RFIDMode = true; // boolean to change modes
 
 int IDslot; // przechowuje index zeskanowanej karty; przechowuje 255 jeśli zeskanowanej karty nie ma w pamięci
-
+int wrongInput;
 char readPIN[4];   // Variable to store users PIN
 
 uint8_t storedCardHash[HASH_SIZE];   // przechowuje hash UID odczytany z pamięci
@@ -193,6 +193,7 @@ void loop() {
       
       if (IDslot==0 && correctPassord) // Podawanie hasła do trybu programowania
       {
+         wrongInput=0;
         lcdPrint("Entering", "Programming Mode");
         digitalWrite(greenLed, HIGH);
         delay(1000);
@@ -202,6 +203,7 @@ void loop() {
       } 
       else if (IDslot!=0 && !addingCardMode && correctPassord) //Podawanie hasła do uwierzytelnienia innej karty niż mastercard
       {
+        wrongInput=0;
         lcdPrint("Pass Accepted", "");
         digitalWrite(greenLed, HIGH);
         delay(1000);
@@ -341,11 +343,17 @@ void displayHash(uint8_t *hash) {
   Serial.println();
 }
 void accessDenied(){
+  int milisec=1000;
+   wrongInput++;
+  if(wrongInput>4) {
+    milisec=2000*wrongInput;
+  }
   digitalWrite(buzzerPin, HIGH);
   digitalWrite(redLed, HIGH);
-  delay(1000);
+  delay(milisec);
   digitalWrite(buzzerPin, LOW);
   digitalWrite(redLed, LOW);
+ 
 }
 
 
